@@ -1,0 +1,83 @@
+#!/usr/bin/python
+
+import subprocess
+import psycopg2
+import sys
+import tempfile
+import json
+import os
+import md5
+import sys
+import optparse
+
+default_editor = "emacs"
+
+def checksum(s):
+    cs = md5.md5()
+    cs.update(s)
+    return cs.hexdigest()
+
+switches = [
+    ("database", "Name of database"),
+    ("user", "User name for database"),
+    ("password", "Password"),
+    ("host", "Host name for database; '127.0.0.1' forced TCP to localhost")
+    ]
+
+def run(options, remainder):
+    app_name, = remainder
+    option_names = [ i[0] for i in switches ]
+    db_opts = dict(map(lambda i: (i, getattr(options, i)), option_names))
+
+    db = psycopg2.connect(**db_opts)
+
+    c = db.cursor()
+    c.execute('select info from app where name = %(app)s', { "app": app_name })
+
+    tmp = tempfile.mktemp()
+    cell = c.fetchall()[0][0]
+    
+    j = json.loads(cell)
+    
+    editor = os.environ.get('EDITOR', default_editor)
+
+    try:
+        with file(tmp, 'w') as f:
+            txt = j["task_presenter"].encode('utf-8')
+            f.write(txt)
+
+        before = checksum(txt)
+
+        subprocess.call([editor, tmp])
+
+        with file(tmp) as f:
+            txt = f.read()
+            
+            after = checksum(txt)
+            if before == after:
+                print "Presenter text unchanged"
+                sys.exit(0)
+
+            j["task_presenter"] = txt.decode('utf-8')
+            info = json.dumps(j)
+            c.execute('update app set info = %(info)s where name = %(app)s',
+                      { "info": info, "app": app_name })
+            db.commit()
+
+    finally:
+        os.remove(tmp)
+
+def config():
+    p = optparse.OptionParser()
+    for name, help_text in switches:
+        p.add_option("--" + name, dest=name, help=help_text)
+
+    options, remainder = p.parse_args()
+    if len(remainder) != 1:
+        print "You must specify an app name"
+        sys.exit(1)
+
+    run(options, remainder)
+
+if __name__ == '__main__':
+    config()
